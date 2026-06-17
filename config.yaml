@@ -1,0 +1,14 @@
+# config.yaml
+data:
+  default_folder: "./chm_tiffs"
+  supported_extensions: [".tif", ".tiff"]
+  
+analysis:
+  default_threshold: 6.0
+  color_schemes: ["Viridis", "Plasma", "Inferno", "Magma", "Cividis", "YlGn", "RdYlGn"]
+  
+years:
+  supported: [2018, 2019, 2020, 2021, 2022, 2023, 2024]
+  
+export:
+  formats: ["csv", "json", "geojson"]

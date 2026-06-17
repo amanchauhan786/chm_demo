@@ -1,4 +1,4 @@
-# app_enhanced.py
+# app_complete.py
 import streamlit as st
 import rasterio
 from rasterio.plot import show
@@ -20,6 +20,7 @@ import re
 from datetime import datetime
 import base64
 from io import BytesIO
+import tempfile
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -86,12 +87,35 @@ st.markdown("""
         background: #E8F5E9;
         border-left: 4px solid #4CAF50;
     }
+    .file-uploading {
+        background: #FFF3E0;
+        border-left: 4px solid #FF9800;
+    }
     .legend-container {
         background: white;
         padding: 10px;
         border-radius: 5px;
         border: 1px solid #ddd;
         margin-top: 10px;
+    }
+    .stButton > button {
+        background-color: #2E7D32;
+        color: white;
+        font-weight: bold;
+        border-radius: 5px;
+        padding: 0.5rem 1rem;
+        width: 100%;
+    }
+    .stButton > button:hover {
+        background-color: #1B5E20;
+        color: white;
+    }
+    .upload-section {
+        background: #f8f9fa;
+        padding: 1rem;
+        border-radius: 10px;
+        border: 2px dashed #4CAF50;
+        margin-bottom: 1rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -106,9 +130,13 @@ if 'chm_stats' not in st.session_state:
 if 'year_data' not in st.session_state:
     st.session_state.year_data = {}
 if 'map_center' not in st.session_state:
-    st.session_state.map_center = [23.5, 77.5]  # Default for Bangladesh
+    st.session_state.map_center = [23.5, 77.5]
 if 'map_zoom' not in st.session_state:
     st.session_state.map_zoom = 8
+if 'uploaded_files' not in st.session_state:
+    st.session_state.uploaded_files = {}
+if 'processing_complete' not in st.session_state:
+    st.session_state.processing_complete = False
 
 # Helper Functions
 def extract_year_from_filename(filename):
@@ -118,14 +146,16 @@ def extract_year_from_filename(filename):
         return int(year_match.group())
     return None
 
+@st.cache_data
 def load_chm_tiff(file_path):
-    """Load CHM TIFF file and extract data"""
+    """Load CHM TIFF file and extract data with caching"""
     try:
         with rasterio.open(file_path) as src:
             data = src.read(1)
             meta = src.meta
             bounds = src.bounds
             transform = src.transform
+            crs = src.crs
             
             # Handle NoData values
             if src.nodata is not None:
@@ -154,6 +184,7 @@ def load_chm_tiff(file_path):
                 'meta': meta,
                 'bounds': bounds,
                 'transform': transform,
+                'crs': crs,
                 'stats': stats,
                 'shape': data.shape
             }
@@ -161,16 +192,15 @@ def load_chm_tiff(file_path):
         st.error(f"Error loading {file_path}: {str(e)}")
         return None
 
-def create_chm_raster_layer(data_obj, colormap='viridis', threshold=6.0):
+def create_raster_image(data_obj, colormap='viridis', threshold=6.0):
     """
-    Create a raster layer for Folium map using matplotlib
-    This creates an image overlay from the CHM data
+    Create a raster image from CHM data for map overlay
     """
     data = data_obj['data']
     bounds = data_obj['bounds']
     
     # Create figure with matplotlib
-    fig, ax = plt.subplots(figsize=(10, 10))
+    fig, ax = plt.subplots(figsize=(12, 12), dpi=100)
     
     # Handle NaN values for plotting
     data_plot = np.ma.masked_where(np.isnan(data), data)
@@ -181,20 +211,25 @@ def create_chm_raster_layer(data_obj, colormap='viridis', threshold=6.0):
                    cmap=colormap,
                    vmin=0,
                    vmax=30,
-                   alpha=0.7)
+                   alpha=0.8,
+                   interpolation='bilinear')
+    
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax, shrink=0.6, label='Canopy Height (m)')
+    cbar.ax.tick_params(labelsize=10)
     
     ax.axis('off')
     
     # Convert to base64 for folium overlay
     buf = BytesIO()
-    plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=100)
+    plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=100, facecolor='white')
     buf.seek(0)
     img_data = base64.b64encode(buf.read()).decode('utf-8')
     plt.close()
     
-    return img_data, (bounds.left, bounds.right, bounds.bottom, bounds.top)
+    return img_data
 
-def create_chm_overlay_map(data_obj, selected_year, threshold=6.0, color_scheme='Viridis'):
+def create_chm_map_with_overlay(data_obj, selected_year, threshold=6.0, color_scheme='viridis'):
     """
     Create a Folium map with CHM data as an image overlay
     """
@@ -207,18 +242,27 @@ def create_chm_overlay_map(data_obj, selected_year, threshold=6.0, color_scheme=
     m = folium.Map(
         location=[center_lat, center_lon],
         zoom_start=8,
-        tiles='OpenStreetMap'
+        tiles='OpenStreetMap',
+        control_scale=True
     )
     
+    # Add satellite basemap option
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attr='Esri',
+        name='Satellite'
+    ).add_to(m)
+    
     # Create raster overlay
-    img_data, extent = create_chm_raster_layer(data_obj, color_scheme, threshold)
+    img_data = create_raster_image(data_obj, color_scheme, threshold)
     
     # Add image overlay
     folium.raster_layers.ImageOverlay(
         image=f'data:image/png;base64,{img_data}',
-        bounds=[[extent[2], extent[0]], [extent[3], extent[1]]],
-        opacity=0.7,
-        name=f'CHM {selected_year}'
+        bounds=[[bounds.bottom, bounds.left], [bounds.top, bounds.right]],
+        opacity=0.75,
+        name=f'CHM {selected_year}',
+        interactive=True
     ).add_to(m)
     
     # Add selected points
@@ -228,16 +272,21 @@ def create_chm_overlay_map(data_obj, selected_year, threshold=6.0, color_scheme=
             folium.CircleMarker(
                 location=[point['lat'], point['lon']],
                 radius=8,
-                popup=f"CHM: {point.get('value', 'N/A'):.2f}m",
+                popup=f"""
+                <b>CHM Value:</b> {point.get('value', 'N/A'):.2f}m<br>
+                <b>Year:</b> {selected_year}<br>
+                <b>Status:</b> {'Below Threshold' if point.get('below_threshold', False) else 'Above Threshold'}
+                """,
                 color=color,
                 fill=True,
                 fill_color=color,
                 fill_opacity=0.8,
-                weight=3
+                weight=3,
+                tooltip=f"CHM: {point.get('value', 'N/A'):.2f}m"
             ).add_to(m)
     
     # Add layer control
-    folium.LayerControl().add_to(m)
+    folium.LayerControl(position='topright').add_to(m)
     
     # Add draw plugin for point selection
     draw = Draw(
@@ -252,6 +301,26 @@ def create_chm_overlay_map(data_obj, selected_year, threshold=6.0, color_scheme=
         edit_options={'edit': False}
     )
     draw.add_to(m)
+    
+    # Add a legend
+    legend_html = f'''
+    <div style="position: fixed; bottom: 50px; left: 50px; z-index: 1000; background: white; padding: 10px; border-radius: 5px; border: 1px solid #ddd; box-shadow: 0 0 10px rgba(0,0,0,0.1);">
+        <h6 style="margin: 0; color: #2E7D32;">CHM Legend</h6>
+        <div style="display: flex; align-items: center; margin: 5px 0;">
+            <div style="width: 20px; height: 20px; background: green; border-radius: 50%; margin-right: 5px;"></div>
+            <span>Above {threshold}m</span>
+        </div>
+        <div style="display: flex; align-items: center; margin: 5px 0;">
+            <div style="width: 20px; height: 20px; background: red; border-radius: 50%; margin-right: 5px;"></div>
+            <span>Below {threshold}m</span>
+        </div>
+        <div style="display: flex; align-items: center; margin: 5px 0;">
+            <div style="width: 20px; height: 20px; background: rgba(0,0,0,0.5); margin-right: 5px;"></div>
+            <span>CHM Raster Layer</span>
+        </div>
+    </div>
+    '''
+    m.get_root().html.add_child(folium.Element(legend_html))
     
     return m
 
@@ -288,30 +357,203 @@ def calculate_low_height_stats(data, threshold=6.0):
         'low_max': float(np.max(low_points)) if len(low_points) > 0 else 0
     }
 
-def create_height_distribution_chart(chm_data_dict, years_to_compare, threshold=6.0):
-    """Create height distribution bar chart"""
-    fig = go.Figure()
+def create_comprehensive_analysis(chm_data_dict, threshold=6.0):
+    """Create comprehensive analysis charts"""
+    years = sorted(chm_data_dict.keys())
     
-    for year in years_to_compare:
-        if year in chm_data_dict:
-            data = chm_data_dict[year]['data'].flatten()
-            valid_data = data[~np.isnan(data)]
-            
-            fig.add_trace(go.Histogram(
-                x=valid_data,
-                name=f"{year}",
-                nbinsx=30,
-                opacity=0.7,
-                histnorm='probability density'
-            ))
+    # Calculate metrics
+    metrics = {}
+    for year in years:
+        data = chm_data_dict[year]['data'].flatten()
+        valid_data = data[~np.isnan(data)]
+        
+        if len(valid_data) > 0:
+            low_mask = valid_data < threshold
+            metrics[year] = {
+                'mean': np.mean(valid_data),
+                'median': np.median(valid_data),
+                'std': np.std(valid_data),
+                'min': np.min(valid_data),
+                'max': np.max(valid_data),
+                'low_percentage': (np.sum(low_mask) / len(valid_data)) * 100,
+                'count': len(valid_data)
+            }
+    
+    return metrics
+
+def create_yearly_bar_charts(metrics, threshold=6.0):
+    """Create comprehensive yearly bar charts"""
+    years = sorted(metrics.keys())
+    
+    fig = make_subplots(
+        rows=2, cols=3,
+        subplot_titles=(
+            "Average Height", "Median Height", "Height Range",
+            "Std Deviation", "% Below Threshold", "Sample Size"
+        ),
+        vertical_spacing=0.15,
+        horizontal_spacing=0.12
+    )
+    
+    # 1. Average Height
+    fig.add_trace(
+        go.Bar(
+            x=years,
+            y=[metrics[y]['mean'] for y in years],
+            text=[f"{m:.2f}m" for m in [metrics[y]['mean'] for y in years]],
+            textposition='outside',
+            marker_color=['#2E7D32' if metrics[y]['mean'] > threshold else '#FF6B6B' for y in years],
+            name='Avg Height'
+        ),
+        row=1, col=1
+    )
+    fig.add_hline(y=threshold, line_dash="dash", line_color="red", row=1, col=1)
+    
+    # 2. Median Height
+    fig.add_trace(
+        go.Bar(
+            x=years,
+            y=[metrics[y]['median'] for y in years],
+            text=[f"{m:.2f}m" for m in [metrics[y]['median'] for y in years]],
+            textposition='outside',
+            marker_color='#2196F3',
+            name='Median Height'
+        ),
+        row=1, col=2
+    )
+    
+    # 3. Height Range
+    fig.add_trace(
+        go.Bar(
+            x=years,
+            y=[metrics[y]['max'] - metrics[y]['min'] for y in years],
+            text=[f"{metrics[y]['min']:.1f}-{metrics[y]['max']:.1f}m" for y in years],
+            textposition='outside',
+            marker_color='#FF9800',
+            name='Height Range'
+        ),
+        row=1, col=3
+    )
+    
+    # 4. Std Deviation
+    fig.add_trace(
+        go.Bar(
+            x=years,
+            y=[metrics[y]['std'] for y in years],
+            text=[f"{m:.2f}m" for m in [metrics[y]['std'] for y in years]],
+            textposition='outside',
+            marker_color='#9C27B0',
+            name='Std Deviation'
+        ),
+        row=2, col=1
+    )
+    
+    # 5. % Below Threshold
+    fig.add_trace(
+        go.Bar(
+            x=years,
+            y=[metrics[y]['low_percentage'] for y in years],
+            text=[f"{m:.1f}%" for m in [metrics[y]['low_percentage'] for y in years]],
+            textposition='outside',
+            marker_color=['#FF6B6B' if metrics[y]['low_percentage'] > 30 else '#FFA07A' if metrics[y]['low_percentage'] > 20 else '#FFC107' for y in years],
+            name='% Below Threshold'
+        ),
+        row=2, col=2
+    )
+    
+    # 6. Sample Size
+    fig.add_trace(
+        go.Bar(
+            x=years,
+            y=[metrics[y]['count'] for y in years],
+            text=[f"{m:,}" for m in [metrics[y]['count'] for y in years]],
+            textposition='outside',
+            marker_color='#607D8B',
+            name='Sample Size'
+        ),
+        row=2, col=3
+    )
     
     fig.update_layout(
-        title="Canopy Height Distribution",
-        xaxis_title="Height (m)",
-        yaxis_title="Density",
-        height=400,
+        height=600,
         template='plotly_white',
-        barmode='overlay',
+        showlegend=False
+    )
+    
+    fig.update_xaxes(title_text="Year", row=2, col=1)
+    fig.update_xaxes(title_text="Year", row=2, col=2)
+    fig.update_xaxes(title_text="Year", row=2, col=3)
+    
+    fig.update_yaxes(title_text="Height (m)", row=1, col=1)
+    fig.update_yaxes(title_text="Height (m)", row=1, col=2)
+    fig.update_yaxes(title_text="Height (m)", row=1, col=3)
+    fig.update_yaxes(title_text="Std Dev (m)", row=2, col=1)
+    fig.update_yaxes(title_text="Percentage (%)", row=2, col=2)
+    fig.update_yaxes(title_text="Count", row=2, col=3)
+    
+    return fig
+
+def create_temporal_trend_chart(metrics, threshold=6.0):
+    """Create temporal trend chart"""
+    years = sorted(metrics.keys())
+    
+    fig = go.Figure()
+    
+    # Add traces for different metrics
+    fig.add_trace(go.Scatter(
+        x=years,
+        y=[metrics[y]['mean'] for y in years],
+        mode='lines+markers',
+        name='Mean Height',
+        line=dict(color='#2E7D32', width=3),
+        marker=dict(size=10),
+        error_y=dict(
+            type='data',
+            array=[metrics[y]['std'] for y in years],
+            visible=True
+        ),
+        hovertemplate='Year: %{x}<br>Mean: %{y:.2f}m<extra></extra>'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=years,
+        y=[metrics[y]['median'] for y in years],
+        mode='lines+markers',
+        name='Median Height',
+        line=dict(color='#2196F3', width=2, dash='dash'),
+        marker=dict(size=8),
+        hovertemplate='Year: %{x}<br>Median: %{y:.2f}m<extra></extra>'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=years,
+        y=[metrics[y]['low_percentage'] for y in years],
+        mode='lines+markers',
+        name='% Below Threshold',
+        line=dict(color='#FF6B6B', width=3),
+        marker=dict(size=10),
+        yaxis='y2',
+        fill='tozeroy',
+        fillcolor='rgba(255,107,107,0.2)',
+        hovertemplate='Year: %{x}<br>% Below Threshold: %{y:.1f}%<extra></extra>'
+    ))
+    
+    # Add threshold line
+    fig.add_hline(y=threshold, line_dash="dash", line_color="red",
+                  annotation_text=f"Threshold: {threshold}m")
+    
+    fig.update_layout(
+        title="Temporal Trends Analysis",
+        xaxis_title="Year",
+        yaxis_title="Height (m)",
+        yaxis2=dict(
+            title="Percentage (%)",
+            overlaying='y',
+            side='right'
+        ),
+        height=500,
+        template='plotly_white',
+        hovermode='x unified',
         legend=dict(
             yanchor="top",
             y=0.99,
@@ -320,160 +562,70 @@ def create_height_distribution_chart(chm_data_dict, years_to_compare, threshold=
         )
     )
     
-    # Add threshold line
-    fig.add_vline(x=threshold, line_dash="dash", line_color="red",
-                  annotation_text=f"Threshold: {threshold}m")
-    
     return fig
 
-def create_yearly_bar_chart(chm_data_dict, threshold=6.0):
-    """Create comprehensive yearly comparison bar chart"""
-    years = sorted(chm_data_dict.keys())
-    
-    # Calculate metrics for each year
-    avg_heights = []
-    med_heights = []
-    min_heights = []
-    max_heights = []
-    low_percentages = []
-    std_heights = []
-    
-    for year in years:
-        data = chm_data_dict[year]['data'].flatten()
-        valid_data = data[~np.isnan(data)]
-        
-        if len(valid_data) > 0:
-            avg_heights.append(np.mean(valid_data))
-            med_heights.append(np.median(valid_data))
-            min_heights.append(np.min(valid_data))
-            max_heights.append(np.max(valid_data))
-            std_heights.append(np.std(valid_data))
-            
-            low_mask = valid_data < threshold
-            low_percentages.append((np.sum(low_mask) / len(valid_data)) * 100)
-        else:
-            avg_heights.append(0)
-            med_heights.append(0)
-            min_heights.append(0)
-            max_heights.append(0)
-            std_heights.append(0)
-            low_percentages.append(0)
-    
-    # Create subplot with multiple bar charts
+def create_distribution_charts(chm_data_dict, years_to_compare, threshold=6.0):
+    """Create distribution charts for selected years"""
     fig = make_subplots(
-        rows=2, cols=2,
-        subplot_titles=(
-            "Average Canopy Height by Year",
-            "Height Range (Min to Max)",
-            "Percentage Below Threshold",
-            "Height Distribution (Box Plot)"
-        ),
-        vertical_spacing=0.15,
-        horizontal_spacing=0.15
+        rows=1, cols=2,
+        subplot_titles=("Height Distribution", "Box Plot Comparison"),
+        vertical_spacing=0.15
     )
     
-    # 1. Average Height Bar Chart
-    fig.add_trace(
-        go.Bar(
-            x=years,
-            y=avg_heights,
-            name='Avg Height',
-            text=[f"{h:.2f}m" for h in avg_heights],
-            textposition='outside',
-            marker_color=['#2E7D32' if h > threshold else '#FF6B6B' for h in avg_heights],
-            hovertemplate='Year: %{x}<br>Avg Height: %{y:.2f}m<extra></extra>'
-        ),
-        row=1, col=1
-    )
+    # Histogram
+    for year in years_to_compare:
+        if year in chm_data_dict:
+            data = chm_data_dict[year]['data'].flatten()
+            valid_data = data[~np.isnan(data)]
+            
+            fig.add_trace(
+                go.Histogram(
+                    x=valid_data,
+                    name=f"{year}",
+                    nbinsx=30,
+                    opacity=0.6,
+                    histnorm='probability density'
+                ),
+                row=1, col=1
+            )
     
-    # Add threshold line to avg height chart
-    fig.add_hline(y=threshold, line_dash="dash", line_color="red",
-                  annotation_text=f"Threshold: {threshold}m", row=1, col=1)
+    # Box plot
+    for year in years_to_compare:
+        if year in chm_data_dict:
+            data = chm_data_dict[year]['data'].flatten()
+            valid_data = data[~np.isnan(data)]
+            
+            fig.add_trace(
+                go.Box(
+                    y=valid_data,
+                    name=str(year),
+                    boxmean='sd',
+                    marker_color='#4CAF50'
+                ),
+                row=1, col=2
+            )
     
-    # 2. Height Range (Min to Max)
-    fig.add_trace(
-        go.Bar(
-            x=years,
-            y=[max_h - min_h for max_h, min_h in zip(max_heights, min_heights)],
-            name='Height Range',
-            text=[f"{max_h:.1f}-{min_h:.1f}m" for max_h, min_h in zip(max_heights, min_heights)],
-            textposition='outside',
-            marker_color='#2196F3',
-            hovertemplate='Year: %{x}<br>Range: %{y:.2f}m<extra></extra>'
-        ),
-        row=1, col=2
-    )
-    
-    # 3. Percentage Below Threshold
-    fig.add_trace(
-        go.Bar(
-            x=years,
-            y=low_percentages,
-            name='% Below Threshold',
-            text=[f"{p:.1f}%" for p in low_percentages],
-            textposition='outside',
-            marker_color=['#FF6B6B' if p > 30 else '#FFA07A' if p > 20 else '#FFC107' for p in low_percentages],
-            hovertemplate='Year: %{x}<br>Below Threshold: %{y:.1f}%<extra></extra>'
-        ),
-        row=2, col=1
-    )
-    
-    # 4. Box plot of height distribution
-    for year in years:
-        data = chm_data_dict[year]['data'].flatten()
-        valid_data = data[~np.isnan(data)]
-        
-        fig.add_trace(
-            go.Box(
-                y=valid_data,
-                name=str(year),
-                boxmean='sd',
-                marker_color='#4CAF50',
-                hovertemplate='Year: %{x}<br>Height: %{y:.2f}m<extra></extra>'
-            ),
-            row=2, col=2
-        )
+    # Add threshold line to histogram
+    fig.add_vline(x=threshold, line_dash="dash", line_color="red", row=1, col=1)
     
     fig.update_layout(
-        height=700,
+        height=400,
         template='plotly_white',
-        showlegend=False,
-        hovermode='x unified'
+        showlegend=True,
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=0.01
+        )
     )
     
-    fig.update_xaxes(title_text="Year", row=2, col=1)
-    fig.update_yaxes(title_text="Height (m)", row=1, col=1)
-    fig.update_yaxes(title_text="Height Range (m)", row=1, col=2)
-    fig.update_yaxes(title_text="Percentage (%)", row=2, col=1)
-    fig.update_yaxes(title_text="Height (m)", row=2, col=2)
+    fig.update_xaxes(title_text="Height (m)", row=1, col=1)
+    fig.update_xaxes(title_text="Year", row=1, col=2)
+    fig.update_yaxes(title_text="Density", row=1, col=1)
+    fig.update_yaxes(title_text="Height (m)", row=1, col=2)
     
     return fig
-
-def create_temporal_heatmap(chm_data_dict):
-    """Create a heatmap showing CHM changes over time"""
-    years = sorted(chm_data_dict.keys())
-    
-    # Sample points for heatmap
-    sample_points = []
-    for year in years:
-        data = chm_data_dict[year]['data']
-        bounds = chm_data_dict[year]['bounds']
-        
-        # Sample at regular intervals
-        lat_step = (bounds.top - bounds.bottom) / 20
-        lon_step = (bounds.right - bounds.left) / 20
-        
-        for i in range(20):
-            for j in range(20):
-                lat = bounds.bottom + i * lat_step
-                lon = bounds.left + j * lon_step
-                sample_points.append({
-                    'year': year,
-                    'latitude': lat,
-                    'longitude': lon
-                })
-    
-    return pd.DataFrame(sample_points)
 
 # Main Title
 st.markdown('<div class="main-header">🌳 Canopy Height Model (CHM) Analysis Dashboard</div>', unsafe_allow_html=True)
@@ -481,59 +633,59 @@ st.markdown('<p style="text-align: center; color: #555;">Internship Project at V
 
 # Sidebar
 with st.sidebar:
-    st.markdown("## 📁 CHM Data Management")
+    st.markdown("## 📁 Upload CHM Files")
     
-    # Option to use existing folder
-    folder_path = st.text_input(
-        "Enter folder path with CHM TIFF files:",
-        value="./chm_tiffs" if os.path.exists("./chm_tiffs") else "",
-        help="Path to folder containing Bangladesh_mosaic_YYYY.tif files"
+    # File upload section
+    st.markdown('<div class="upload-section">', unsafe_allow_html=True)
+    uploaded_files = st.file_uploader(
+        "Upload CHM TIFF Files",
+        type=['tif', 'tiff'],
+        accept_multiple_files=True,
+        help="Upload TIFF files. Year will be extracted from filename (e.g., Bangladesh_mosaic_2020.tif)"
     )
+    st.markdown('</div>', unsafe_allow_html=True)
     
-    if folder_path and os.path.exists(folder_path):
-        # List all TIFF files
-        tiff_files = [f for f in os.listdir(folder_path) if f.endswith(('.tif', '.tiff'))]
+    if uploaded_files:
+        st.markdown(f"**📄 {len(uploaded_files)} files uploaded**")
         
-        if tiff_files:
-            st.markdown(f"**Found {len(tiff_files)} TIFF files:**")
-            
-            # Display files with year
-            year_files = {}
-            for filename in tiff_files:
-                year = extract_year_from_filename(filename)
-                if year:
-                    year_files[year] = filename
-            
-            if year_files:
-                if st.button("📊 Load All CHM Files", type="primary"):
-                    with st.spinner("Loading CHM TIFF files..."):
-                        loaded_count = 0
-                        for year, filename in year_files.items():
-                            file_path = os.path.join(folder_path, filename)
-                            data_obj = load_chm_tiff(file_path)
-                            if data_obj:
-                                st.session_state.chm_data[year] = data_obj
-                                st.session_state.year_data[year] = {
-                                    'filename': filename,
-                                    'path': file_path
-                                }
-                                loaded_count += 1
-                        st.success(f"✅ Successfully loaded {loaded_count} files")
-                        st.rerun()
+        # Process uploaded files
+        if st.button("🔄 Process Uploaded Files", type="primary"):
+            with st.spinner("Processing TIFF files..."):
+                processed_count = 0
+                for file in uploaded_files:
+                    year = extract_year_from_filename(file.name)
+                    if year:
+                        # Save to temp file
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.tif') as tmp_file:
+                            tmp_file.write(file.getbuffer())
+                            tmp_path = tmp_file.name
+                        
+                        # Load data
+                        data_obj = load_chm_tiff(tmp_path)
+                        if data_obj:
+                            st.session_state.chm_data[year] = data_obj
+                            st.session_state.year_data[year] = {
+                                'filename': file.name,
+                                'size': file.size,
+                                'path': tmp_path
+                            }
+                            processed_count += 1
+                            
+                            # Clean up temp file
+                            os.unlink(tmp_path)
                 
-                # Show loaded status
-                for year, filename in year_files.items():
-                    if year in st.session_state.chm_data:
-                        st.markdown(f'<div class="file-status file-loaded">✅ {filename}</div>', unsafe_allow_html=True)
-            else:
-                st.warning("No valid year found in filenames")
-        else:
-            st.info("No TIFF files found in the specified folder")
-    else:
-        if folder_path:
-            st.error(f"❌ Folder not found: {folder_path}")
-        else:
-            st.info("Enter folder path to load CHM files")
+                st.session_state.processing_complete = True
+                st.success(f"✅ Successfully processed {processed_count} files")
+                st.rerun()
+        
+        # Show file status
+        for file in uploaded_files:
+            year = extract_year_from_filename(file.name)
+            if year:
+                if year in st.session_state.chm_data:
+                    st.markdown(f'<div class="file-status file-loaded">✅ {file.name} (Year: {year})</div>', unsafe_allow_html=True)
+                else:
+                    st.markdown(f'<div class="file-status file-uploading">⏳ {file.name} (Year: {year}) - Pending</div>', unsafe_allow_html=True)
     
     st.markdown("---")
     st.markdown("## 🎯 Analysis Controls")
@@ -550,7 +702,7 @@ with st.sidebar:
     
     # Color scheme
     color_scheme = st.selectbox(
-        "Color Scheme",
+        "Map Color Scheme",
         options=['viridis', 'plasma', 'inferno', 'magma', 'cividis', 'YlGn', 'RdYlGn'],
         index=0
     )
@@ -567,18 +719,62 @@ with st.sidebar:
     else:
         selected_year = None
         st.info("No CHM data loaded yet")
-
-# Main content - only show if data is loaded
-if not st.session_state.chm_data:
-    st.info("📂 Please load CHM TIFF files to begin analysis. Enter folder path in sidebar and click 'Load All CHM Files'.")
     
-    # Show placeholder
+    st.markdown("---")
+    st.markdown("## 📍 Point Selection")
+    
+    # Manual point addition
+    if selected_year is not None and selected_year in st.session_state.chm_data:
+        bounds = st.session_state.chm_data[selected_year]['bounds']
+        center_lat = (bounds.top + bounds.bottom) / 2
+        center_lon = (bounds.left + bounds.right) / 2
+        
+        col_lat, col_lon = st.columns(2)
+        with col_lat:
+            lat_input = st.number_input(
+                "Latitude",
+                value=center_lat,
+                format="%.6f"
+            )
+        with col_lon:
+            lon_input = st.number_input(
+                "Longitude",
+                value=center_lon,
+                format="%.6f"
+            )
+        
+        if st.button("➕ Add Point"):
+            data_obj = st.session_state.chm_data[selected_year]
+            value = get_point_value(data_obj['data'], data_obj['transform'], lat_input, lon_input)
+            if value is not None:
+                st.session_state.selected_points.append({
+                    'lat': lat_input,
+                    'lon': lon_input,
+                    'year': selected_year,
+                    'value': value,
+                    'below_threshold': value < height_threshold
+                })
+                st.success(f"✅ Point added! CHM value: {value:.2f}m")
+                st.rerun()
+            else:
+                st.error("❌ Could not get CHM value at this location")
+
+# Main content
+if not st.session_state.chm_data:
+    st.info("📂 Please upload CHM TIFF files using the sidebar and click 'Process Uploaded Files' to begin analysis.")
+    
+    # Show placeholder with instructions
     st.markdown("""
     <div style="text-align: center; padding: 3rem; background: #f5f5f5; border-radius: 10px;">
         <h3>🌳 CHM Analysis Dashboard</h3>
-        <p style="color: #666;">Load CHM TIFF files to visualize and analyze canopy height data</p>
+        <p style="color: #666;">Upload CHM TIFF files to visualize and analyze canopy height data</p>
         <p style="font-size: 0.9rem; color: #999;">Expected files: Bangladesh_mosaic_2020.tif, Bangladesh_mosaic_2021.tif, ...</p>
-        <p style="font-size: 0.9rem; color: #999;">Files will be displayed as raster layers on the map</p>
+        <p style="font-size: 0.9rem; color: #999;">Files will be displayed as raster layers on the interactive map</p>
+        <div style="margin-top: 1rem;">
+            <span style="background: #E8F5E9; padding: 0.5rem 1rem; border-radius: 5px;">📊 Multi-year analysis</span>
+            <span style="background: #E3F2FD; padding: 0.5rem 1rem; border-radius: 5px; margin-left: 0.5rem;">🗺️ Raster overlay</span>
+            <span style="background: #FFF3E0; padding: 0.5rem 1rem; border-radius: 5px; margin-left: 0.5rem;">📈 Interactive charts</span>
+        </div>
     </div>
     """, unsafe_allow_html=True)
 else:
@@ -592,12 +788,11 @@ else:
     with col1:
         st.markdown('<div class="section-header">🗺️ CHM Raster Overlay Map</div>', unsafe_allow_html=True)
         
-        # Create and display map with CHM raster overlay
         if selected_year is not None and selected_year in st.session_state.chm_data:
             data_obj = st.session_state.chm_data[selected_year]
             
             # Create map with CHM overlay
-            m = create_chm_overlay_map(
+            m = create_chm_map_with_overlay(
                 data_obj, 
                 selected_year, 
                 height_threshold, 
@@ -605,79 +800,25 @@ else:
             )
             
             # Display map
-            folium_static(m, width=700, height=550)
+            folium_static(m, width=750, height=600)
             
-            # Legend and info
-            st.markdown(f"""
-            <div class="legend-container">
-                <small>
-                    <span style="display: inline-block; width: 20px; height: 20px; background: red; border-radius: 50%;"></span> 
-                    Points below {height_threshold}m &nbsp;&nbsp;
-                    <span style="display: inline-block; width: 20px; height: 20px; background: green; border-radius: 50%;"></span> 
-                    Points above {height_threshold}m &nbsp;&nbsp;
-                    <span style="display: inline-block; width: 20px; height: 20px; background: rgba(0,0,0,0.5);"></span> 
-                    CHM Raster Layer (Opacity: 0.7)
-                </small>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Instructions
+            # Map instructions
             st.markdown("""
             <div style="background: #E3F2FD; padding: 0.5rem; border-radius: 5px; margin-top: 0.5rem;">
-                <small>💡 Click on the map to add points for analysis. The CHM raster layer shows canopy height distribution.</small>
+                <small>💡 <b>Map Features:</b> Click on map to add points • Use +/- to zoom • Toggle layers in top-right • Points show CHM values</small>
             </div>
             """, unsafe_allow_html=True)
-            
-            # Manual point addition
-            st.markdown("### 📍 Add Point Manually")
-            bounds = data_obj['bounds']
-            center_lat = (bounds.top + bounds.bottom) / 2
-            center_lon = (bounds.left + bounds.right) / 2
-            
-            col_lat, col_lon = st.columns(2)
-            with col_lat:
-                lat_input = st.number_input(
-                    "Latitude",
-                    value=center_lat,
-                    format="%.6f",
-                    key="lat_input"
-                )
-            with col_lon:
-                lon_input = st.number_input(
-                    "Longitude",
-                    value=center_lon,
-                    format="%.6f",
-                    key="lon_input"
-                )
-            
-            if st.button("➕ Add Point", key="add_point_btn"):
-                value = get_point_value(data_obj['data'], data_obj['transform'], lat_input, lon_input)
-                if value is not None:
-                    st.session_state.selected_points.append({
-                        'lat': lat_input,
-                        'lon': lon_input,
-                        'year': selected_year,
-                        'value': value,
-                        'below_threshold': value < height_threshold
-                    })
-                    st.success(f"✅ Point added! CHM value: {value:.2f}m")
-                    st.rerun()
-                else:
-                    st.error("❌ Could not get CHM value at this location")
         else:
             st.warning("Please select a year to display the map")
     
     with col2:
         st.markdown('<div class="section-header">📊 Yearly Statistics</div>', unsafe_allow_html=True)
         
-        # Display statistics for selected year
         if selected_year is not None and selected_year in st.session_state.chm_data:
             data_obj = st.session_state.chm_data[selected_year]
             stats = data_obj['stats']
             
             if stats:
-                st.markdown(f"### 📊 {selected_year} Statistics")
-                
                 # Statistics cards
                 stats_data = {
                     "Mean Height": f"{stats['mean']:.2f} m",
@@ -698,16 +839,16 @@ else:
                 # Low height statistics
                 low_stats = calculate_low_height_stats(data_obj['data'], height_threshold)
                 if low_stats:
-                    st.markdown(f"### 🔴 Below {height_threshold}m Analysis")
+                    st.markdown(f"### 🔴 Below {height_threshold}m")
                     st.markdown(f"""
                     <div class="highlight-box">
-                        <strong>📊 Points below {height_threshold}m:</strong> {low_stats['low_points_count']:,} ({low_stats['low_points_percentage']:.1f}%)<br>
-                        <strong>📈 Mean height (low points):</strong> {low_stats['low_mean']:.2f} m<br>
-                        <strong>📉 Min height (low points):</strong> {low_stats['low_min']:.2f} m
+                        <strong>📊 Points below threshold:</strong> {low_stats['low_points_count']:,} ({low_stats['low_points_percentage']:.1f}%)<br>
+                        <strong>📈 Mean height:</strong> {low_stats['low_mean']:.2f} m<br>
+                        <strong>📉 Min height:</strong> {low_stats['low_min']:.2f} m
                     </div>
                     """, unsafe_allow_html=True)
         
-        # Selected points display
+        # Selected points
         st.markdown("### 📍 Selected Points")
         
         if st.session_state.selected_points:
@@ -736,36 +877,37 @@ else:
 
 # Charts Section
 if st.session_state.chm_data:
-    st.markdown('<div class="section-header">📊 CHM Analysis Charts & Visualizations</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">📊 Comprehensive Analysis & Charts</div>', unsafe_allow_html=True)
+    
+    # Calculate comprehensive metrics
+    metrics = create_comprehensive_analysis(st.session_state.chm_data, height_threshold)
     
     # Create tabs for different charts
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Yearly Bar Charts", "📈 Height Distribution", "📉 Temporal Trends", "🎯 Low Height Analysis"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Yearly Comparison", "📈 Temporal Trends", "📉 Distribution Analysis", "📋 Data Summary"])
     
     with tab1:
-        st.subheader("Yearly CHM Comparison - Bar Charts")
+        st.subheader("Yearly CHM Comparison")
         
-        # Create comprehensive yearly bar chart
-        yearly_fig = create_yearly_bar_chart(st.session_state.chm_data, height_threshold)
+        # Create yearly bar charts
+        yearly_fig = create_yearly_bar_charts(metrics, height_threshold)
         st.plotly_chart(yearly_fig, use_container_width=True)
         
         # Summary table
         st.subheader("Yearly Summary Table")
         
         summary_data = []
-        for year in sorted(st.session_state.chm_data.keys()):
-            data_obj = st.session_state.chm_data[year]
-            stats = data_obj['stats']
-            if stats:
-                low_stats = calculate_low_height_stats(data_obj['data'], height_threshold)
-                summary_data.append({
-                    'Year': year,
-                    'Mean (m)': f"{stats['mean']:.2f}",
-                    'Median (m)': f"{stats['median']:.2f}",
-                    'Min (m)': f"{stats['min']:.2f}",
-                    'Max (m)': f"{stats['max']:.2f}",
-                    'Std Dev': f"{stats['std']:.2f}",
-                    '% Below Threshold': f"{low_stats['low_points_percentage']:.1f}%" if low_stats else "N/A"
-                })
+        for year in sorted(metrics.keys()):
+            m = metrics[year]
+            summary_data.append({
+                'Year': year,
+                'Mean (m)': f"{m['mean']:.2f}",
+                'Median (m)': f"{m['median']:.2f}",
+                'Min (m)': f"{m['min']:.2f}",
+                'Max (m)': f"{m['max']:.2f}",
+                'Std Dev': f"{m['std']:.2f}",
+                '% Below Threshold': f"{m['low_percentage']:.1f}%",
+                'Sample Size': f"{m['count']:,}"
+            })
         
         summary_df = pd.DataFrame(summary_data)
         st.dataframe(summary_df, use_container_width=True)
@@ -775,12 +917,63 @@ if st.session_state.chm_data:
         st.download_button(
             label="📥 Download Yearly Summary CSV",
             data=csv,
-            file_name=f"chm_yearly_summary_{datetime.now().strftime('%Y%m%d')}.csv",
+            file_name=f"chm_yearly_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
             mime="text/csv"
         )
     
     with tab2:
-        st.subheader("Canopy Height Distribution")
+        st.subheader("Temporal Trends Analysis")
+        
+        # Create temporal trend chart
+        trend_fig = create_temporal_trend_chart(metrics, height_threshold)
+        st.plotly_chart(trend_fig, use_container_width=True)
+        
+        # Calculate growth statistics
+        if len(metrics) >= 2:
+            years = sorted(metrics.keys())
+            first_year = years[0]
+            last_year = years[-1]
+            
+            growth = ((metrics[last_year]['mean'] - metrics[first_year]['mean']) / metrics[first_year]['mean']) * 100
+            low_change = metrics[last_year]['low_percentage'] - metrics[first_year]['low_percentage']
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.markdown(f"""
+                <div class="metric-card" style="background: #E8F5E9;">
+                    <strong>📈 Height Growth</strong><br>
+                    <span style="font-size: 1.2rem; color: {'#2E7D32' if growth > 0 else '#F44336'};">
+                        {growth:+.1f}%
+                    </span><br>
+                    <span style="color: #666;">({first_year} → {last_year})</span>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown(f"""
+                <div class="metric-card" style="background: #FFF3E0;">
+                    <strong>🔴 Low Area Change</strong><br>
+                    <span style="font-size: 1.2rem; color: {'#2E7D32' if low_change < 0 else '#F44336'};">
+                        {low_change:+.1f}%
+                    </span><br>
+                    <span style="color: #666;">Below threshold</span>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col3:
+                st.markdown(f"""
+                <div class="metric-card" style="background: #E3F2FD;">
+                    <strong>📊 Data Coverage</strong><br>
+                    <span style="font-size: 1.2rem; color: #1565C0;">
+                        {len(years)} years
+                    </span><br>
+                    <span style="color: #666;">Total analyzed</span>
+                </div>
+                """, unsafe_allow_html=True)
+    
+    with tab3:
+        st.subheader("Height Distribution Analysis")
         
         # Select years to compare
         years_to_compare = st.multiselect(
@@ -790,182 +983,114 @@ if st.session_state.chm_data:
         )
         
         if years_to_compare:
-            dist_fig = create_height_distribution_chart(st.session_state.chm_data, years_to_compare, height_threshold)
+            dist_fig = create_distribution_charts(st.session_state.chm_data, years_to_compare, height_threshold)
             st.plotly_chart(dist_fig, use_container_width=True)
-    
-    with tab3:
-        st.subheader("Temporal CHM Trends")
-        
-        # Calculate metrics for trend analysis
-        years = sorted(st.session_state.chm_data.keys())
-        avg_heights = []
-        med_heights = []
-        std_heights = []
-        low_percentages = []
-        
-        for year in years:
-            data = st.session_state.chm_data[year]['data'].flatten()
-            valid_data = data[~np.isnan(data)]
             
-            if len(valid_data) > 0:
-                avg_heights.append(np.mean(valid_data))
-                med_heights.append(np.median(valid_data))
-                std_heights.append(np.std(valid_data))
-                
-                low_mask = valid_data < height_threshold
-                low_percentages.append((np.sum(low_mask) / len(valid_data)) * 100)
-            else:
-                avg_heights.append(0)
-                med_heights.append(0)
-                std_heights.append(0)
-                low_percentages.append(0)
-        
-        # Create trend figure
-        fig_trend = make_subplots(
-            rows=2, cols=1,
-            subplot_titles=("Average Canopy Height Trend", "Percentage Below Threshold Trend"),
-            vertical_spacing=0.15
-        )
-        
-        fig_trend.add_trace(
-            go.Scatter(
-                x=years,
-                y=avg_heights,
-                mode='lines+markers',
-                name='Avg Height',
-                line=dict(color='#2E7D32', width=3),
-                marker=dict(size=10),
-                error_y=dict(
-                    type='data',
-                    array=std_heights,
-                    visible=True
-                )
-            ),
-            row=1, col=1
-        )
-        
-        fig_trend.add_hline(y=height_threshold, line_dash="dash", line_color="red",
-                           annotation_text=f"Threshold: {height_threshold}m", row=1, col=1)
-        
-        fig_trend.add_trace(
-            go.Scatter(
-                x=years,
-                y=low_percentages,
-                mode='lines+markers',
-                name='% Below Threshold',
-                line=dict(color='#FF6B6B', width=3),
-                marker=dict(size=10),
-                fill='tozeroy',
-                fillcolor='rgba(255,107,107,0.2)'
-            ),
-            row=2, col=1
-        )
-        
-        fig_trend.update_layout(
-            height=500,
-            template='plotly_white',
-            showlegend=False,
-            hovermode='x unified'
-        )
-        
-        fig_trend.update_xaxes(title_text="Year", row=2, col=1)
-        fig_trend.update_yaxes(title_text="Height (m)", row=1, col=1)
-        fig_trend.update_yaxes(title_text="Percentage (%)", row=2, col=1)
-        
-        st.plotly_chart(fig_trend, use_container_width=True)
-        
-        # Calculate growth rate
-        if len(avg_heights) >= 2:
-            growth_rate = ((avg_heights[-1] - avg_heights[0]) / avg_heights[0]) * 100
-            st.markdown(f"""
-            <div class="metric-card" style="background: #E8F5E9;">
-                <strong>📈 Overall Growth Rate ({years[0]} to {years[-1]}):</strong> 
-                <span style="color: {'#2E7D32' if growth_rate > 0 else '#F44336'}; font-size: 1.2rem;">
-                    {growth_rate:+.1f}%
-                </span>
-            </div>
-            """, unsafe_allow_html=True)
+            # Statistical summary of selected years
+            st.subheader("Statistical Comparison")
+            
+            comparison_data = []
+            for year in years_to_compare:
+                data = st.session_state.chm_data[year]['data'].flatten()
+                valid_data = data[~np.isnan(data)]
+                if len(valid_data) > 0:
+                    comparison_data.append({
+                        'Year': year,
+                        'Mean': f"{np.mean(valid_data):.2f}m",
+                        'Median': f"{np.median(valid_data):.2f}m",
+                        'Std Dev': f"{np.std(valid_data):.2f}m",
+                        'Q1': f"{np.percentile(valid_data, 25):.2f}m",
+                        'Q3': f"{np.percentile(valid_data, 75):.2f}m",
+                        'IQR': f"{np.percentile(valid_data, 75) - np.percentile(valid_data, 25):.2f}m"
+                    })
+            
+            comp_df = pd.DataFrame(comparison_data)
+            st.dataframe(comp_df, use_container_width=True)
     
     with tab4:
-        st.subheader(f"Low Canopy Height Analysis (< {height_threshold}m)")
+        st.subheader("Data Summary & Statistics")
         
-        col1, col2 = st.columns(2)
+        # Overall statistics
+        all_data = []
+        for year, data_obj in st.session_state.chm_data.items():
+            data = data_obj['data'].flatten()
+            valid_data = data[~np.isnan(data)]
+            all_data.extend(valid_data)
+        
+        all_data = np.array(all_data)
+        
+        st.markdown("### 📊 Overall Statistics (All Years)")
+        
+        col1, col2, col3 = st.columns(3)
         
         with col1:
-            st.markdown("### 📊 Overall Summary")
-            
-            total_points_below = 0
-            total_points = 0
-            
-            for year, data_obj in st.session_state.chm_data.items():
-                data = data_obj['data']
-                valid_data = data[~np.isnan(data)]
-                low_mask = valid_data < height_threshold
-                
-                total_points += len(valid_data)
-                total_points_below += np.sum(low_mask)
-            
-            if total_points > 0:
-                st.markdown(f"""
-                <div class="highlight-box">
-                    <strong>🔴 Total Points Below {height_threshold}m:</strong> {total_points_below:,}<br>
-                    <strong>📊 Percentage of Total Area:</strong> {(total_points_below / total_points * 100):.1f}%<br>
-                    <strong>📈 Affected Years:</strong> {len(st.session_state.chm_data)}
-                </div>
-                """, unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class="metric-card">
+                <strong>📈 Mean Height</strong><br>
+                <span style="font-size: 1.5rem; color: #2E7D32;">{np.mean(all_data):.2f} m</span>
+            </div>
+            """, unsafe_allow_html=True)
         
         with col2:
-            # Low points by year bar chart
-            low_by_year = []
-            years_low = sorted(st.session_state.chm_data.keys())
-            
-            for year in years_low:
-                data_obj = st.session_state.chm_data[year]
-                data = data_obj['data']
-                valid_data = data[~np.isnan(data)]
-                low_mask = valid_data < height_threshold
-                low_by_year.append((np.sum(low_mask) / len(valid_data) * 100) if len(valid_data) > 0 else 0)
-            
-            fig_low = go.Figure(data=[
-                go.Bar(
-                    x=years_low,
-                    y=low_by_year,
-                    text=[f"{p:.1f}%" for p in low_by_year],
-                    textposition='outside',
-                    marker_color=['#FF6B6B' if p > 30 else '#FFA07A' if p > 20 else '#FFC107' for p in low_by_year],
-                    hovertemplate='Year: %{x}<br>Below Threshold: %{y:.1f}%<extra></extra>'
-                )
-            ])
-            
-            fig_low.update_layout(
-                title="Percentage Below Threshold by Year",
-                xaxis_title="Year",
-                yaxis_title="Percentage (%)",
-                height=300,
-                template='plotly_white'
-            )
-            
-            st.plotly_chart(fig_low, use_container_width=True)
+            st.markdown(f"""
+            <div class="metric-card">
+                <strong>📊 Median Height</strong><br>
+                <span style="font-size: 1.5rem; color: #2196F3;">{np.median(all_data):.2f} m</span>
+            </div>
+            """, unsafe_allow_html=True)
         
-        # Detailed low points analysis by year
-        st.markdown("### 📊 Yearly Low Points Analysis")
+        with col3:
+            st.markdown(f"""
+            <div class="metric-card">
+                <strong>📉 Std Deviation</strong><br>
+                <span style="font-size: 1.5rem; color: #9C27B0;">{np.std(all_data):.2f} m</span>
+            </div>
+            """, unsafe_allow_html=True)
         
-        low_analysis_data = []
-        for year in sorted(st.session_state.chm_data.keys()):
-            data_obj = st.session_state.chm_data[year]
-            low_stats = calculate_low_height_stats(data_obj['data'], height_threshold)
-            if low_stats:
-                low_analysis_data.append({
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown(f"""
+            <div class="metric-card" style="background: #FFEBEE;">
+                <strong>🔴 Min Height</strong><br>
+                <span style="font-size: 1.5rem; color: #F44336;">{np.min(all_data):.2f} m</span>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown(f"""
+            <div class="metric-card" style="background: #E8F5E9;">
+                <strong>🟢 Max Height</strong><br>
+                <span style="font-size: 1.5rem; color: #2E7D32;">{np.max(all_data):.2f} m</span>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col3:
+            total_points = len(all_data)
+            st.markdown(f"""
+            <div class="metric-card" style="background: #E3F2FD;">
+                <strong>📊 Total Points</strong><br>
+                <span style="font-size: 1.5rem; color: #1565C0;">{total_points:,}</span>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Data quality report
+        st.markdown("### 📋 Data Quality Report")
+        
+        quality_data = []
+        for year, data_obj in st.session_state.chm_data.items():
+            stats = data_obj['stats']
+            if stats:
+                quality_data.append({
                     'Year': year,
-                    'Total Points': low_stats['total_points'],
-                    'Low Points': low_stats['low_points_count'],
-                    'Percentage': f"{low_stats['low_points_percentage']:.1f}%",
-                    'Mean Low Height': f"{low_stats['low_mean']:.2f}m",
-                    'Min Low Height': f"{low_stats['low_min']:.2f}m"
+                    'Total Pixels': f"{stats['total_pixels']:,}",
+                    'Valid Pixels': f"{stats['count']:,}",
+                    'NoData Pixels': f"{stats['no_data_pixels']:,}",
+                    'Data Quality': f"{(stats['count']/stats['total_pixels']*100):.1f}%"
                 })
         
-        low_df = pd.DataFrame(low_analysis_data)
-        st.dataframe(low_df, use_container_width=True)
+        quality_df = pd.DataFrame(quality_data)
+        st.dataframe(quality_df, use_container_width=True)
 
 # Project Information
 st.markdown('---')
@@ -993,12 +1118,13 @@ with st.expander("📖 About This Analysis", expanded=False):
     5. Temporal vegetation analysis
     6. Explainability using SHAP and Integrated Gradients
     
-    ### Data Files:
-    - `Bangladesh_mosaic_2020.tif` - CHM data for 2020
-    - `Bangladesh_mosaic_2021.tif` - CHM data for 2021
-    - `Bangladesh_mosaic_2022.tif` - CHM data for 2022
-    - `Bangladesh_mosaic_2023.tif` - CHM data for 2023
-    - `Bangladesh_mosaic_2024.tif` - CHM data for 2024
+    ### Features of this Dashboard:
+    - **Upload TIFF files** and automatically detect years
+    - **Raster overlay on interactive map** with color coding
+    - **Point selection** on map for detailed analysis
+    - **Comprehensive yearly comparison** with bar charts
+    - **Temporal trend analysis** with growth metrics
+    - **Export data** as CSV for further analysis
     """)
 
 # Footer

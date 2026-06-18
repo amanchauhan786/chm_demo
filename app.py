@@ -1,4 +1,4 @@
-# app.py - Complete Farm Analysis Dashboard (2020-2024)
+# app.py - Complete Farm Analysis Dashboard (Fixed)
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -435,6 +435,9 @@ def create_trend_chart(farm_analysis_df, selected_key=None):
 def create_summary_dashboard(farm_analysis_df, threshold=7.0):
     """Create comprehensive summary dashboard"""
     
+    if farm_analysis_df.empty:
+        return None
+    
     fig = make_subplots(
         rows=2, cols=3,
         subplot_titles=(
@@ -449,7 +452,7 @@ def create_summary_dashboard(farm_analysis_df, threshold=7.0):
         horizontal_spacing=0.12
     )
     
-    # 1. Status Distribution
+    # 1. Status Distribution (Only add if data exists)
     status_counts = {
         'Low & Increasing': len(farm_analysis_df[(farm_analysis_df['is_low']) & (farm_analysis_df['is_increasing'])]),
         'Low & Not Increasing': len(farm_analysis_df[(farm_analysis_df['is_low']) & (~farm_analysis_df['is_increasing'])]),
@@ -457,70 +460,90 @@ def create_summary_dashboard(farm_analysis_df, threshold=7.0):
         'Good & Stable': len(farm_analysis_df[(~farm_analysis_df['is_low']) & (~farm_analysis_df['is_increasing'])])
     }
     
-    fig.add_trace(
-        go.Pie(
-            labels=list(status_counts.keys()),
-            values=list(status_counts.values()),
-            hole=0.4,
-            marker=dict(colors=['#FFA500', '#FF4444', '#4CAF50', '#2196F3']),
-            textinfo='label+percent'
-        ),
-        row=1, col=1
-    )
+    # Filter out zero values for pie chart
+    status_labels = [k for k, v in status_counts.items() if v > 0]
+    status_values = [v for v in status_counts.values() if v > 0]
+    
+    if status_labels and status_values:
+        fig.add_trace(
+            go.Pie(
+                labels=status_labels,
+                values=status_values,
+                hole=0.4,
+                marker=dict(colors=['#FFA500', '#FF4444', '#4CAF50', '#2196F3']),
+                textinfo='label+percent'
+            ),
+            row=1, col=1
+        )
+    else:
+        fig.add_trace(
+            go.Pie(
+                labels=['No Data'],
+                values=[1],
+                hole=0.4,
+                marker=dict(colors=['#ccc']),
+                textinfo='label'
+            ),
+            row=1, col=1
+        )
     
     # 2. Height Distribution (2024)
     heights = farm_analysis_df['last_value'].dropna()
-    fig.add_trace(
-        go.Histogram(
-            x=heights,
-            nbinsx=20,
-            marker_color='#4CAF50',
-            hovertemplate='Height: %{x:.2f}m<br>Count: %{y}<extra></extra>'
-        ),
-        row=1, col=2
-    )
-    fig.add_vline(x=threshold, line_dash="dash", line_color="red", row=1, col=2)
-    fig.add_vline(x=farm_analysis_df['median_value'].median(), line_dash="dot", line_color="blue", 
-                  annotation_text=f"Median: {farm_analysis_df['median_value'].median():.1f}m", row=1, col=2)
+    if not heights.empty:
+        fig.add_trace(
+            go.Histogram(
+                x=heights,
+                nbinsx=20,
+                marker_color='#4CAF50',
+                hovertemplate='Height: %{x:.2f}m<br>Count: %{y}<extra></extra>'
+            ),
+            row=1, col=2
+        )
+        fig.add_vline(x=threshold, line_dash="dash", line_color="red", row=1, col=2)
+        fig.add_vline(x=farm_analysis_df['median_value'].median(), line_dash="dot", line_color="blue", 
+                      annotation_text=f"Median: {farm_analysis_df['median_value'].median():.1f}m", row=1, col=2)
     
     # 3. Growth Rate Distribution
     growth_rates = farm_analysis_df['growth_rate'].dropna()
-    fig.add_trace(
-        go.Histogram(
-            x=growth_rates,
-            nbinsx=20,
-            marker_color='#2196F3',
-            hovertemplate='Growth Rate: %{x:.1f}%<br>Count: %{y}<extra></extra>'
-        ),
-        row=1, col=3
-    )
-    fig.add_vline(x=0, line_dash="dash", line_color="green", row=1, col=3)
+    if not growth_rates.empty:
+        fig.add_trace(
+            go.Histogram(
+                x=growth_rates,
+                nbinsx=20,
+                marker_color='#2196F3',
+                hovertemplate='Growth Rate: %{x:.1f}%<br>Count: %{y}<extra></extra>'
+            ),
+            row=1, col=3
+        )
+        fig.add_vline(x=0, line_dash="dash", line_color="green", row=1, col=3)
     
     # 4. Low Farms
     low_farms = farm_analysis_df[farm_analysis_df['is_low']].sort_values('last_value').head(10)
-    fig.add_trace(
-        go.Bar(
-            x=low_farms['KEY'].astype(str),
-            y=low_farms['last_value'],
-            text=low_farms['last_value'].apply(lambda x: f"{x:.1f}m"),
-            textposition='outside',
-            marker_color=['#FF6B6B' if v < 5 else '#FFA07A' for v in low_farms['last_value']]
-        ),
-        row=2, col=1
-    )
+    if not low_farms.empty:
+        fig.add_trace(
+            go.Bar(
+                x=low_farms['KEY'].astype(str),
+                y=low_farms['last_value'],
+                text=low_farms['last_value'].apply(lambda x: f"{x:.1f}m"),
+                textposition='outside',
+                marker_color=['#FF6B6B' if v < 5 else '#FFA07A' for v in low_farms['last_value']]
+            ),
+            row=2, col=1
+        )
     
     # 5. Top 10 Growth Rates
     top_growth = farm_analysis_df.nlargest(10, 'growth_rate')
-    fig.add_trace(
-        go.Bar(
-            x=top_growth['KEY'].astype(str),
-            y=top_growth['growth_rate'],
-            text=top_growth['growth_rate'].apply(lambda x: f"{x:.1f}%"),
-            textposition='outside',
-            marker_color='#4CAF50'
-        ),
-        row=2, col=2
-    )
+    if not top_growth.empty:
+        fig.add_trace(
+            go.Bar(
+                x=top_growth['KEY'].astype(str),
+                y=top_growth['growth_rate'],
+                text=top_growth['growth_rate'].apply(lambda x: f"{x:.1f}%"),
+                textposition='outside',
+                marker_color='#4CAF50'
+            ),
+            row=2, col=2
+        )
     
     # 6. Yearly Height Trends (Box plot)
     years = sorted(set().union(*farm_analysis_df['years'].apply(set)))
@@ -698,7 +721,7 @@ with st.sidebar:
 if st.session_state.farm_analysis is not None:
     analysis_df = st.session_state.farm_analysis
     
-    # Summary statistics
+    # Summary statistics - Only show in sidebar or metrics, not as text display
     st.markdown('<div class="section-header">📊 Farm Analysis Summary (2020-2024)</div>', unsafe_allow_html=True)
     
     col1, col2, col3, col4, col5, col6 = st.columns(6)
@@ -721,7 +744,7 @@ if st.session_state.farm_analysis is not None:
     with col2:
         st.markdown(f"""
         <div class="metric-card" style="border-left-color: #F44336;">
-            <strong>🔴 Low Farms (2024)</strong><br>
+            <strong>🔴 Low Farms</strong><br>
             <span style="font-size: 1.6rem; color: #F44336;">{low_farms}</span>
             <br><span style="color: #666;">({low_farms/total_farms*100:.1f}%)</span>
         </div>
@@ -748,7 +771,7 @@ if st.session_state.farm_analysis is not None:
     with col5:
         st.markdown(f"""
         <div class="metric-card" style="border-left-color: #9C27B0;">
-            <strong>📊 Avg Height (2024)</strong><br>
+            <strong>📊 Avg Height</strong><br>
             <span style="font-size: 1.6rem; color: #9C27B0;">{avg_height:.1f}m</span>
         </div>
         """, unsafe_allow_html=True)
@@ -788,17 +811,17 @@ if st.session_state.farm_analysis is not None:
         with col1:
             filter_option = st.selectbox(
                 "Filter farms:",
-                ["All Farms", "Low Farms (<7m)", "Increasing Farms", "Low & Increasing", "High Farms (>7m)", "Top 10 Growth"]
+                ["All Farms", "Low Farms", "Increasing Farms", "Low & Increasing", "High Farms", "Top 10 Growth"]
             )
         
         with col2:
-            if filter_option == "Low Farms (<7m)":
+            if filter_option == "Low Farms":
                 filtered_df = analysis_df[analysis_df['is_low']]
             elif filter_option == "Increasing Farms":
                 filtered_df = analysis_df[analysis_df['is_increasing']]
             elif filter_option == "Low & Increasing":
                 filtered_df = analysis_df[(analysis_df['is_low']) & (analysis_df['is_increasing'])]
-            elif filter_option == "High Farms (>7m)":
+            elif filter_option == "High Farms":
                 filtered_df = analysis_df[~analysis_df['is_low']]
             elif filter_option == "Top 10 Growth":
                 filtered_df = analysis_df.nlargest(10, 'growth_rate')
@@ -843,7 +866,7 @@ if st.session_state.farm_analysis is not None:
                     with col1:
                         st.markdown(f"""
                         <div class="farm-card {'critical-farm' if farm['is_low'] else ''}">
-                            <strong>📊 Current Height (2024)</strong><br>
+                            <strong>📊 Current Height</strong><br>
                             <span style="font-size: 1.4rem;">{farm['last_value']:.2f} m</span>
                         </div>
                         """, unsafe_allow_html=True)
@@ -892,9 +915,10 @@ if st.session_state.farm_analysis is not None:
         st.subheader("Summary Dashboard (2020-2024)")
         
         summary_fig = create_summary_dashboard(analysis_df, height_threshold)
-        st.plotly_chart(summary_fig, use_container_width=True)
+        if summary_fig:
+            st.plotly_chart(summary_fig, use_container_width=True)
         
-        # Additional stats
+        # Additional stats - In cards without text labels
         st.markdown("### 📊 Key Statistics")
         col1, col2, col3, col4 = st.columns(4)
         

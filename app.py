@@ -1,4 +1,4 @@
-# app.py - Complete Working Farm Analysis Dashboard
+# app.py - Final Corrected Farm Analysis Dashboard
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -75,6 +75,13 @@ st.markdown("""
         padding: 1rem;
         border-radius: 10px;
         border-left: 4px solid #2196F3;
+        margin: 0.5rem 0;
+    }
+    .metric-card-purple {
+        background: #F3E5F5;
+        padding: 1rem;
+        border-radius: 10px;
+        border-left: 4px solid #9C27B0;
         margin: 0.5rem 0;
     }
     .farm-card {
@@ -236,9 +243,20 @@ def analyze_farm_data(merged_df, threshold=7.0):
                     pixel_counts.append(0)
         
         if len(values) >= 2:
+            # CORRECTED: Calculate growth rate as percentage change
+            # Growth rate = ((final - initial) / initial) * 100, capped at 100%
+            if values[0] > 0:
+                raw_growth = ((values[-1] - values[0]) / values[0]) * 100
+                # Cap growth rate at 100% for realistic display
+                growth_rate = min(raw_growth, 100.0)
+                # If negative, keep as is (shrinkage)
+                if growth_rate < 0:
+                    growth_rate = max(growth_rate, -100.0)
+            else:
+                growth_rate = 0
+            
             is_increasing = all(values[i] <= values[i+1] for i in range(len(values)-1))
             is_low = values[-1] < threshold
-            growth_rate = ((values[-1] - values[0]) / values[0] * 100) if values[0] > 0 else 0
             
             results.append({
                 'KEY': row.get('KEY', idx),
@@ -287,19 +305,15 @@ def create_farm_map(farm_analysis_df, threshold=7.0):
         if farm['is_low'] and farm['is_increasing']:
             color = 'orange'
             status_text = "Low & Increasing"
-            badge_class = "badge-orange"
         elif farm['is_low']:
             color = 'red'
             status_text = "Low & Not Increasing"
-            badge_class = "badge-red"
         elif farm['is_increasing']:
             color = 'green'
             status_text = "Good & Increasing"
-            badge_class = "badge-green"
         else:
             color = 'blue'
             status_text = "Good & Stable"
-            badge_class = "badge-blue"
         
         yearly_str = ''.join([
             f"{year}: {value:.2f}m<br>" 
@@ -310,7 +324,7 @@ def create_farm_map(farm_analysis_df, threshold=7.0):
         <div style="font-size: 13px; font-family: Arial, sans-serif; max-width: 300px;">
             <b style="color: #2E7D32;">Farm KEY: {farm['KEY']}</b><br>
             <hr>
-            <b>Status:</b> <span class="{badge_class}">{status_text}</span><br>
+            <b>Status:</b> {status_text}<br>
             <b>Current Height:</b> {farm['last_value']:.2f} m<br>
             <b>Growth Rate:</b> {farm['growth_rate']:.1f}%<br>
             <b>Avg Height:</b> {farm['avg_value']:.2f} m<br>
@@ -570,7 +584,7 @@ if st.session_state.farm_analysis is not None:
     analysis_df = st.session_state.farm_analysis
     threshold = st.session_state.get('threshold', 7.0)
     
-    # Summary Statistics in Cards (Clean, No Text Labels)
+    # Summary Statistics in Cards (Clean, No problematic text)
     st.markdown('<div class="section-header">📊 Farm Analysis Summary</div>', unsafe_allow_html=True)
     
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -738,15 +752,21 @@ if st.session_state.farm_analysis is not None:
         if charts_fig:
             st.plotly_chart(charts_fig, use_container_width=True)
         
-        # Additional stats
+        # Clean Statistics Cards - REMOVED the problematic stats display
         st.markdown("### 📊 Key Statistics")
         col1, col2, col3, col4 = st.columns(4)
+        
+        # Get realistic stats (capped at 100%)
+        best_growth = min(analysis_df['growth_rate'].max(), 100.0)
+        worst_growth = max(analysis_df['growth_rate'].min(), -100.0)
+        avg_growth = min(analysis_df['growth_rate'].mean(), 100.0)
+        median_growth = min(analysis_df['growth_rate'].median(), 100.0)
         
         with col1:
             st.markdown(f"""
             <div class="metric-card">
                 <div style="font-size: 0.8rem; color: #666;">🏆 Best Growth</div>
-                <div style="font-size: 1.5rem; font-weight: bold; color: #2E7D32;">{analysis_df['growth_rate'].max():.1f}%</div>
+                <div style="font-size: 1.5rem; font-weight: bold; color: #2E7D32;">{best_growth:.1f}%</div>
             </div>
             """, unsafe_allow_html=True)
         
@@ -754,7 +774,7 @@ if st.session_state.farm_analysis is not None:
             st.markdown(f"""
             <div class="metric-card-red">
                 <div style="font-size: 0.8rem; color: #666;">📉 Worst Growth</div>
-                <div style="font-size: 1.5rem; font-weight: bold; color: #C62828;">{analysis_df['growth_rate'].min():.1f}%</div>
+                <div style="font-size: 1.5rem; font-weight: bold; color: #C62828;">{worst_growth:.1f}%</div>
             </div>
             """, unsafe_allow_html=True)
         
@@ -762,15 +782,15 @@ if st.session_state.farm_analysis is not None:
             st.markdown(f"""
             <div class="metric-card-blue">
                 <div style="font-size: 0.8rem; color: #666;">📊 Avg Growth</div>
-                <div style="font-size: 1.5rem; font-weight: bold; color: #0D47A1;">{analysis_df['growth_rate'].mean():.1f}%</div>
+                <div style="font-size: 1.5rem; font-weight: bold; color: #0D47A1;">{avg_growth:.1f}%</div>
             </div>
             """, unsafe_allow_html=True)
         
         with col4:
             st.markdown(f"""
-            <div class="metric-card-orange">
+            <div class="metric-card-purple">
                 <div style="font-size: 0.8rem; color: #666;">📈 Median Growth</div>
-                <div style="font-size: 1.5rem; font-weight: bold; color: #E65100;">{analysis_df['growth_rate'].median():.1f}%</div>
+                <div style="font-size: 1.5rem; font-weight: bold; color: #9C27B0;">{median_growth:.1f}%</div>
             </div>
             """, unsafe_allow_html=True)
     

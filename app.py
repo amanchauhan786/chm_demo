@@ -1,4 +1,4 @@
-# app.py - Final Corrected Farm Analysis Dashboard
+# app.py - Final Clean Version (Only Total Farms & Avg Height)
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -51,38 +51,19 @@ st.markdown("""
     }
     .metric-card {
         background: #f0f4f0;
-        padding: 1rem;
+        padding: 1.2rem;
         border-radius: 10px;
         border-left: 4px solid #2E7D32;
         margin: 0.5rem 0;
-    }
-    .metric-card-red {
-        background: #FFEBEE;
-        padding: 1rem;
-        border-radius: 10px;
-        border-left: 4px solid #F44336;
-        margin: 0.5rem 0;
-    }
-    .metric-card-orange {
-        background: #FFF3E0;
-        padding: 1rem;
-        border-radius: 10px;
-        border-left: 4px solid #FF9800;
-        margin: 0.5rem 0;
+        text-align: center;
     }
     .metric-card-blue {
         background: #E3F2FD;
-        padding: 1rem;
+        padding: 1.2rem;
         border-radius: 10px;
         border-left: 4px solid #2196F3;
         margin: 0.5rem 0;
-    }
-    .metric-card-purple {
-        background: #F3E5F5;
-        padding: 1rem;
-        border-radius: 10px;
-        border-left: 4px solid #9C27B0;
-        margin: 0.5rem 0;
+        text-align: center;
     }
     .farm-card {
         background: #E8F5E9;
@@ -120,17 +101,14 @@ st.markdown("""
         border: 2px dashed #4CAF50;
         margin-bottom: 1rem;
     }
-    .status-badge {
-        display: inline-block;
-        padding: 0.25rem 0.5rem;
-        border-radius: 12px;
-        font-size: 0.8rem;
+    .big-number {
+        font-size: 2.5rem;
         font-weight: bold;
     }
-    .badge-green { background: #E8F5E9; color: #2E7D32; }
-    .badge-red { background: #FFEBEE; color: #C62828; }
-    .badge-orange { background: #FFF3E0; color: #E65100; }
-    .badge-blue { background: #E3F2FD; color: #0D47A1; }
+    .label-text {
+        font-size: 0.9rem;
+        color: #666;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -243,13 +221,9 @@ def analyze_farm_data(merged_df, threshold=7.0):
                     pixel_counts.append(0)
         
         if len(values) >= 2:
-            # CORRECTED: Calculate growth rate as percentage change
-            # Growth rate = ((final - initial) / initial) * 100, capped at 100%
             if values[0] > 0:
                 raw_growth = ((values[-1] - values[0]) / values[0]) * 100
-                # Cap growth rate at 100% for realistic display
                 growth_rate = min(raw_growth, 100.0)
-                # If negative, keep as is (shrinkage)
                 if growth_rate < 0:
                     growth_rate = max(growth_rate, -100.0)
             else:
@@ -376,7 +350,6 @@ def create_trend_chart(farm_analysis_df, selected_key=None):
                 hovertemplate='Year: %{x}<br>Height: %{y:.2f}m<extra></extra>'
             ))
     else:
-        # Show top 5 farms with highest growth
         filtered = farm_analysis_df.nlargest(5, 'growth_rate')
         colors = ['#2E7D32', '#2196F3', '#FF9800', '#9C27B0', '#F44336']
         for i, (_, farm) in enumerate(filtered.iterrows()):
@@ -403,7 +376,7 @@ def create_trend_chart(farm_analysis_df, selected_key=None):
     return fig
 
 def create_summary_charts(farm_analysis_df, threshold=7.0):
-    """Create summary charts - No pie chart, using bar charts instead"""
+    """Create summary charts"""
     if farm_analysis_df.empty:
         return None
     
@@ -584,57 +557,27 @@ if st.session_state.farm_analysis is not None:
     analysis_df = st.session_state.farm_analysis
     threshold = st.session_state.get('threshold', 7.0)
     
-    # Summary Statistics in Cards (Clean, No problematic text)
+    # Summary Statistics - ONLY Total Farms and Avg Height
     st.markdown('<div class="section-header">📊 Farm Analysis Summary</div>', unsafe_allow_html=True)
     
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2 = st.columns(2)
     
     total = len(analysis_df)
-    low = len(analysis_df[analysis_df['is_low']])
-    increasing = len(analysis_df[analysis_df['is_increasing']])
-    low_inc = len(analysis_df[(analysis_df['is_low']) & (analysis_df['is_increasing'])])
     avg_h = analysis_df['last_value'].mean()
     
     with col1:
         st.markdown(f"""
         <div class="metric-card">
-            <div style="font-size: 0.8rem; color: #666;">Total Farms</div>
-            <div style="font-size: 2rem; font-weight: bold; color: #2E7D32;">{total}</div>
+            <div class="label-text">Total Farms</div>
+            <div class="big-number" style="color: #2E7D32;">{total}</div>
         </div>
         """, unsafe_allow_html=True)
     
     with col2:
         st.markdown(f"""
-        <div class="metric-card-red">
-            <div style="font-size: 0.8rem; color: #666;">Low Farms</div>
-            <div style="font-size: 2rem; font-weight: bold; color: #C62828;">{low}</div>
-            <div style="font-size: 0.8rem; color: #666;">({low/total*100:.1f}%)</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col3:
-        st.markdown(f"""
         <div class="metric-card-blue">
-            <div style="font-size: 0.8rem; color: #666;">Increasing</div>
-            <div style="font-size: 2rem; font-weight: bold; color: #0D47A1;">{increasing}</div>
-            <div style="font-size: 0.8rem; color: #666;">({increasing/total*100:.1f}%)</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col4:
-        st.markdown(f"""
-        <div class="metric-card-orange">
-            <div style="font-size: 0.8rem; color: #666;">Low & Increasing</div>
-            <div style="font-size: 2rem; font-weight: bold; color: #E65100;">{low_inc}</div>
-            <div style="font-size: 0.8rem; color: #666;">({low_inc/total*100:.1f}%)</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col5:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div style="font-size: 0.8rem; color: #666;">Avg Height</div>
-            <div style="font-size: 2rem; font-weight: bold; color: #2E7D32;">{avg_h:.1f}m</div>
+            <div class="label-text">Average Height (2024)</div>
+            <div class="big-number" style="color: #0D47A1;">{avg_h:.1f} m</div>
         </div>
         """, unsafe_allow_html=True)
     
@@ -752,47 +695,8 @@ if st.session_state.farm_analysis is not None:
         if charts_fig:
             st.plotly_chart(charts_fig, use_container_width=True)
         
-        # Clean Statistics Cards - REMOVED the problematic stats display
-        st.markdown("### 📊 Key Statistics")
-        col1, col2, col3, col4 = st.columns(4)
-        
-        # Get realistic stats (capped at 100%)
-        best_growth = min(analysis_df['growth_rate'].max(), 100.0)
-        worst_growth = max(analysis_df['growth_rate'].min(), -100.0)
-        avg_growth = min(analysis_df['growth_rate'].mean(), 100.0)
-        median_growth = min(analysis_df['growth_rate'].median(), 100.0)
-        
-        with col1:
-            st.markdown(f"""
-            <div class="metric-card">
-                <div style="font-size: 0.8rem; color: #666;">🏆 Best Growth</div>
-                <div style="font-size: 1.5rem; font-weight: bold; color: #2E7D32;">{best_growth:.1f}%</div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col2:
-            st.markdown(f"""
-            <div class="metric-card-red">
-                <div style="font-size: 0.8rem; color: #666;">📉 Worst Growth</div>
-                <div style="font-size: 1.5rem; font-weight: bold; color: #C62828;">{worst_growth:.1f}%</div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col3:
-            st.markdown(f"""
-            <div class="metric-card-blue">
-                <div style="font-size: 0.8rem; color: #666;">📊 Avg Growth</div>
-                <div style="font-size: 1.5rem; font-weight: bold; color: #0D47A1;">{avg_growth:.1f}%</div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col4:
-            st.markdown(f"""
-            <div class="metric-card-purple">
-                <div style="font-size: 0.8rem; color: #666;">📈 Median Growth</div>
-                <div style="font-size: 1.5rem; font-weight: bold; color: #9C27B0;">{median_growth:.1f}%</div>
-            </div>
-            """, unsafe_allow_html=True)
+        # Key Statistics - REMOVED completely
+        # No stats cards here anymore
     
     with tab4:
         st.subheader("Farm Data Table")
